@@ -1,0 +1,6 @@
+target/
+.idea/
+*~
+*.zip
+this-is-the-way.iml
+sachsen.geojson/
