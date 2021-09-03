@@ -15,11 +15,11 @@ import org.opengis.referencing.crs.CoordinateReferenceSystem;
 import org.opengis.referencing.operation.MathTransform;
 import org.opengis.referencing.operation.TransformException;
 
-import java.io.File;
-import java.io.FileInputStream;
-import java.io.IOException;
-import java.io.InputStream;
-import java.util.Arrays;
+import java.io.*;
+import java.time.LocalDate;
+import java.time.format.DateTimeFormatter;
+import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
 import java.util.zip.GZIPInputStream;
@@ -36,6 +36,7 @@ public class Converter {
     private void start() throws IOException {
         String url = "http://www.list.smwa.sachsen.de/gdi/download/baustelleninfo/Baustelleninfo_Sachsen_geojson.zip";
         String fileName = "sachsen.geojson/Baustelleninfo_Sperrungen_Sachsen.json";
+        String output = "sachsen.tsv";
         File file = new File(folder, fileName);
         if (!file.exists()) {
             // store to disk to avoid downloading for development purposes, later we could avoid this intermediate step
@@ -43,7 +44,6 @@ public class Converter {
             write(url, file);
         }
 
-        System.out.println("converting ...");
         InputStream stream = new FileInputStream(file);
         if (fileName.endsWith(".zip"))
             stream = new ZipInputStream(stream);
@@ -51,19 +51,51 @@ public class Converter {
             stream = new GZIPInputStream(stream);
         Map<String, Object> map = om.readValue(stream, new TypeReference<Map<String, Object>>() {
         });
-        System.out.println(map);
 
-        try {
+        try (FileWriter writer = new FileWriter(output)) {
             CoordinateReferenceSystem sourceCRS = CRS.decode("EPSG:25833");
-            CoordinateReferenceSystem targetCRS = CRS.decode("EPSG:3857");
+            CoordinateReferenceSystem targetCRS = CRS.decode("EPSG:4326");
+
             MathTransform t = CRS.findMathTransform(sourceCRS, targetCRS);
             DirectPosition position = new DirectPosition2D();
             DirectPosition transformedPosition = new DirectPosition2D();
 
-            position.setOrdinate(0, 447239.96);
-            position.setOrdinate(1, 5698938.2199999997);
-            t.transform(position, transformedPosition);
-            System.out.println(Arrays.toString(transformedPosition.getCoordinate()));
+            DateTimeFormatter formatter = DateTimeFormatter.ofPattern("dd.MM.yyyy", Locale.ROOT);
+            List<Map> list = (List<Map>) map.get("features");
+            writer.append("ID\t Type\t lat1\t lon1\t lat2\t lon2\n");
+            for (Map featureObj : list) {
+                Map<String, String> properties = (Map<String, String>) featureObj.get("properties");
+
+                String kind = properties.getOrDefault("Sperrung_Art", "");
+                // D = full, F = one way blocked, C = one way still possible?, B = slower
+                if (kind.equals("D") || kind.equals("F") /*|| kind.equals("C")*/) {
+                    String from = properties.getOrDefault("Sperrung_von", "");
+                    String to = properties.getOrDefault("Sperrung_bis", "");
+                    LocalDate now = LocalDate.now();
+                    from = from.split(" ")[0];
+                    to = to.split(" ")[0];
+                    boolean blocked = !LocalDate.parse(from, formatter).isAfter(now) && !LocalDate.parse(to, formatter).isBefore(now);
+
+                    if (!blocked)
+                        continue;
+
+                    List<List> coordinates = (List<List>) ((Map) featureObj.get("geometry")).get("coordinates");
+                    String str = "";
+                    for (List coordinate : coordinates) {
+                        position.setOrdinate(0, ((Number) coordinate.get(0)).doubleValue());
+                        position.setOrdinate(1, ((Number) coordinate.get(1)).doubleValue());
+                        t.transform(position, transformedPosition);
+                        // uh, it is 0=lat, 1=lon !?
+                        double[] coords = transformedPosition.getCoordinate();
+                        if (!str.isEmpty())
+                            str += "\t ";
+                        str += coords[0] + "\t " + coords[1];
+                    }
+
+                    writer.append(properties.get("ID") + "-" + properties.get("Aktenzeichen") + "\t " + kind + "\t " + str + "\n");
+                }
+            }
+
         } catch (FactoryException | TransformException e) {
             throw new RuntimeException(e);
         }
@@ -73,7 +105,6 @@ public class Converter {
         OkHttpClient downloader = new OkHttpClient.Builder().
                 connectTimeout(10, TimeUnit.SECONDS).readTimeout(60, TimeUnit.SECONDS).
                 build();
-
 
         try (BufferedSink sink = Okio.buffer(Okio.sink(file))) {
             Response response = downloader.newCall(new Request.Builder().url(url).build()).execute();
