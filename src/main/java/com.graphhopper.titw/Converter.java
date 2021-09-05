@@ -62,43 +62,46 @@ public class Converter {
 
             DateTimeFormatter formatter = DateTimeFormatter.ofPattern("dd.MM.yyyy", Locale.ROOT);
             List<Map> list = (List<Map>) map.get("features");
-            writer.append("ID\t Type\t lat1\t lon1\t lat2\t lon2\n");
+            writer.append("ID\t Speedfactor\t Both-Directions\t lat1;lon1;lat2;lon2;..\n");
             for (Map featureObj : list) {
                 Map<String, String> properties = (Map<String, String>) featureObj.get("properties");
 
                 String kind = properties.getOrDefault("Sperrung_Art", "");
-                // D = full, F = one way blocked, C = one way still possible?, B = slower
-                if (kind.equals("D") || kind.equals("F") /*|| kind.equals("C")*/) {
-                    String from = properties.getOrDefault("Sperrung_von", "");
-                    String to = properties.getOrDefault("Sperrung_bis", "");
-                    LocalDate now = LocalDate.now();
-                    from = from.split(" ")[0];
-                    to = to.split(" ")[0];
-                    boolean blocked = !LocalDate.parse(from, formatter).isAfter(now) && !LocalDate.parse(to, formatter).isBefore(now);
+                String from = properties.getOrDefault("Sperrung_von", "");
+                String to = properties.getOrDefault("Sperrung_bis", "");
+                LocalDate now = LocalDate.now();
+                from = from.split(" ")[0];
+                to = to.split(" ")[0];
+                boolean blocked = !LocalDate.parse(from, formatter).isAfter(now) && !LocalDate.parse(to, formatter).isBefore(now);
+                if (!blocked)
+                    continue;
 
-                    if (!blocked)
-                        continue;
-
-                    List<List> coordinates = (List<List>) ((Map) featureObj.get("geometry")).get("coordinates");
-                    String str = "";
-                    for (List coordinate : coordinates) {
-                        position.setOrdinate(0, ((Number) coordinate.get(0)).doubleValue());
-                        position.setOrdinate(1, ((Number) coordinate.get(1)).doubleValue());
-                        t.transform(position, transformedPosition);
-                        // uh, it is 0=lat, 1=lon !?
-                        double[] coords = transformedPosition.getCoordinate();
-                        if (!str.isEmpty())
-                            str += "\t ";
-                        str += coords[0] + "\t " + coords[1];
-                    }
-
-                    writer.append(properties.get("ID") + "-" + properties.get("Aktenzeichen") + "\t " + kind + "\t " + str + "\n");
+                List<List> coordinates = (List<List>) ((Map) featureObj.get("geometry")).get("coordinates");
+                String str = "";
+                for (List coordinate : coordinates) {
+                    position.setOrdinate(0, ((Number) coordinate.get(0)).doubleValue());
+                    position.setOrdinate(1, ((Number) coordinate.get(1)).doubleValue());
+                    t.transform(position, transformedPosition);
+                    // uh, it is 0=lat, 1=lon !?
+                    double[] coords = transformedPosition.getCoordinate();
+                    if (!str.isEmpty())
+                        str += ";";
+                    str += round6(coords[0]) + "," + round6(coords[1]);
                 }
+
+                // D = full, F = one way blocked, C = one way still possible?, B = slower
+                double speedFactor = kind.equals("D") || kind.equals("F") ? 0 : kind.equals("C") ? 0.5 : kind.equals("B") ? 0.4 : 1;
+                boolean bothDir = !kind.equals("F") && !kind.equals("C");
+                writer.append(properties.get("ID") + "-" + properties.get("Aktenzeichen") + "\t " + speedFactor + "\t " + bothDir + "\t " + str + "\n");
             }
 
         } catch (FactoryException | TransformException e) {
             throw new RuntimeException(e);
         }
+    }
+
+    private static double round6(double val) {
+        return Math.round(val * 1e6) / 1.0e6;
     }
 
     private void write(String url, File file) throws IOException {
